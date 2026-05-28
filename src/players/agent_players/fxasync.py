@@ -158,11 +158,13 @@ class FactExprAsyncAgent(ExprAgent):
 
         # ========== Step 1: 三路召回 ==========
         # Path 1 — 相似召回（以最近 trajectory 为 query）
+        # 把和最近相关的一些事实召回，总结经验
         if active and query_text:
             p1, _ = topk_by_similarity(query_text, active, k=20, vec_lookup=self._emb_store.data, salience_fn=None)
         else:
             p1 = []
         # Path 2 — 多样性（phase × outcome 分箱）
+        # 保持多样性
         buckets = defaultdict(list)
         for f in active:
             buckets[(f["phase"], f["hand_outcome"])].append(f)
@@ -170,6 +172,7 @@ class FactExprAsyncAgent(ExprAgent):
         for items in buckets.values():
             p2.extend(random.sample(items, k=min(2, len(items))))
         # Path 3 — 重要性
+        # 保持显著性
         p3 = sorted(active, key=lambda f: self._salience(f["id"], t), reverse=True)[:10]
         p1, p2, p3 = list(p1), list(p2), list(p3)
 
@@ -233,23 +236,24 @@ class FactExprAsyncAgent(ExprAgent):
             sup_ids = list(revision.get("supporting_fact_ids") or [])
             con_ids = list(revision.get("contradicting_fact_ids") or [])
             noi_ids = list(revision.get("noise_fact_ids") or [])
+            # 即使 keep=False 但 new_md 为空/未变，也只跳过写 experience.md，
+            # 不阻断 Step 3 的 stability reweight 和 sweep_log（fact ids 仍有价值）。
             if not revision.get("keep", True):
                 new_md = (revision.get("new_md") or "").strip()
-                if not new_md or new_md == current_exp_md:
-                    return None
-                Path(self.exp_md_path).write_text(new_md, encoding="utf-8")
-                rev_num = len(self.exp_log.read_all()) + 1
-                self.exp_log.append({
-                    "rev": rev_num,
-                    "hand_index": final_state["hand_index"],
-                    "old_md": current_exp_md,
-                    "new_md": new_md,
-                    "calibration_note": revision.get("calibration_note", ""),
-                    "self_check": revision.get("self_check", ""),
-                    "supporting_fact_ids": list(revision.get("supporting_fact_ids") or []),
-                    "contradicting_fact_ids": list(revision.get("contradicting_fact_ids") or []),
-                    "noise_fact_ids": list(revision.get("noise_fact_ids") or []),
-                })
+                if new_md and new_md != current_exp_md:
+                    Path(self.exp_md_path).write_text(new_md, encoding="utf-8")
+                    rev_num = len(self.exp_log.read_all()) + 1
+                    self.exp_log.append({
+                        "rev": rev_num,
+                        "hand_index": final_state["hand_index"],
+                        "old_md": current_exp_md,
+                        "new_md": new_md,
+                        "calibration_note": revision.get("calibration_note", ""),
+                        "self_check": revision.get("self_check", ""),
+                        "supporting_fact_ids": list(revision.get("supporting_fact_ids") or []),
+                        "contradicting_fact_ids": list(revision.get("contradicting_fact_ids") or []),
+                        "noise_fact_ids": list(revision.get("noise_fact_ids") or []),
+                    })
 
         # ========== Step 3: Reweight ==========
         sup_set, con_set, noi_set = set(sup_ids), set(con_ids), set(noi_ids)

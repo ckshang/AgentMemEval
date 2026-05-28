@@ -26,19 +26,31 @@ REFLECTION_PROMPT = """你刚打完德州扑克的一手。请你基于这手的
 输出严格 JSON，字段由具体提问决定。只输出 JSON。"""
 
 
-def _outcome(final_state, my_id):
-    for w in final_state.get("winners", []) or []:
-        if w["player_id"] == my_id:
-            return "win"
-    return "loss"
-
-
 def _won_amount(final_state, my_id):
+    """ 本手从底池里赢到的金额（毛收入，不扣投入）。 """
     total = 0
     for w in final_state.get("winners", []) or []:
         if w["player_id"] == my_id:
             total += int(w.get("amount", 0) or 0)
     return total
+
+
+def _net_amount(final_state, my_id):
+    """ 本手净收益：从底池赢到的 - 投入的。等价于 final_stack - stack_before_hand。 """
+    won = _won_amount(final_state, my_id)
+    me = next((p for p in final_state.get("players", []) if p["id"] == my_id), None)
+    committed = int(me["total_committed"]) if me else 0
+    return won - committed
+
+
+def _outcome(final_state, my_id):
+    """ 以净收益为准：边池/分池下，赢回一小份但本手净亏要算 loss。 """
+    net = _net_amount(final_state, my_id)
+    if net > 0:
+        return "win"
+    if net < 0:
+        return "loss"
+    return "draw"
 
 
 def _fmt_action(act):
@@ -125,17 +137,17 @@ def summarize_hand(working_buffer, final_state, my_id):
     committed = me["total_committed"] if me else 0
     stack = me["stack"] if me else 0
     won = _won_amount(final_state, my_id)
+    net = won - committed
     note_winners = "; ".join(
         f"{w['player_id']}={w.get('amount', 0)}" for w in (final_state.get("winners") or [])
         if w["player_id"] != my_id
     )
-    if won > 0:
-        lines.append("")
-        lines.append(f"结局: stack={stack}, 本手投入 {committed}, 赢得 {won}")
-    else:
-        extra = f" (赢家: {note_winners})" if note_winners else ""
-        lines.append("")
-        lines.append(f"结局: stack={stack}, 本手投入 {committed}, 未赢{extra}")
+    extra = f" (赢家: {note_winners})" if note_winners else ""
+    lines.append("")
+    lines.append(
+        f"结局: stack={stack}, 本手投入 {committed}, 从底池赢回 {won}, "
+        f"净收益 {net:+d}{extra}"
+    )
 
     revealed = [
         f"  {p['id']}: hole={p['hole_cards']}"

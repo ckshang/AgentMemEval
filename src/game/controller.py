@@ -28,6 +28,7 @@ class GameController:
         self.community_cards = []
         self.pot = 0
         self.current_bet_this_round = 0
+        self.last_raise_size_this_round = self.big_blind
         self.dealer_seat = self._seat_order[0]
         self.phase = PHASE_WAITING
         self.current_player_seat = None
@@ -46,6 +47,7 @@ class GameController:
         self.community_cards = []
         self.pot = 0
         self.current_bet_this_round = 0
+        self.last_raise_size_this_round = self.big_blind
         self.has_acted_this_round = set()
         self.action_history = []
         self.winners = []
@@ -151,9 +153,11 @@ class GameController:
             p.total_committed += diff
             self.pot += diff
             if p.current_bet > self.current_bet_this_round:
+                raise_increment = p.current_bet - self.current_bet_this_round
                 self.current_bet_this_round = p.current_bet
-                # raise 重开行动：清空"本街已行动"集合
-                self.has_acted_this_round = set()
+                if raise_increment >= self.last_raise_size_this_round:
+                    self.last_raise_size_this_round = raise_increment
+                    self.has_acted_this_round = set()
 
         else:
             raise ValueError(f"未知动作类型: {atype}")
@@ -211,13 +215,15 @@ class GameController:
         返回当前局面快照。
         viewer_id=None：上帝视角，所有 hole_cards 可见（用于日志）
         viewer_id=某玩家 id：只有该玩家自己 hole_cards 可见
-        showdown / hand_over 阶段：所有未弃牌玩家 hole_cards 都公开
+        真正发生 showdown（showdown_ranks 非空）时：只公开未弃牌玩家的底牌；
+        非摊牌结束（只剩一人收底池）不公开任何底牌。
         """
-        show_all = viewer_id is None or self.phase in (PHASE_SHOWDOWN, PHASE_HAND_OVER)
+        god_view = viewer_id is None
+        was_showdown = bool(self.showdown_ranks)
 
         players_out = []
         for p in self.players:
-            visible = show_all or p.player_id == viewer_id
+            visible = god_view or p.player_id == viewer_id or (was_showdown and not p.folded)
             players_out.append({
                 "id": p.player_id,
                 "seat": p.seat,
@@ -267,6 +273,7 @@ class GameController:
 
         # 清本街下注、找下一街第一个行动者（dealer 下家方向，第一个还能行动的）
         self.current_bet_this_round = 0
+        self.last_raise_size_this_round = self.big_blind
         self.has_acted_this_round = set()
         for p in self.players:
             p.current_bet = 0
@@ -361,7 +368,8 @@ class GameController:
 
         # raise 需要 call 完之后还能继续加
         if p.stack > to_call:
-            min_to = self.current_bet_this_round + self.big_blind   # 简化：最小加注增量 = 大盲
+            # 最小再加注 = 当前线 + 上一次有效加注额（每条街起始为大盲）
+            min_to = self.current_bet_this_round + self.last_raise_size_this_round
             max_to = p.current_bet + p.stack                        # all-in 上限
             if max_to >= min_to:
                 actions.append({"type": "raise", "min_amount": min_to, "max_amount": max_to})
