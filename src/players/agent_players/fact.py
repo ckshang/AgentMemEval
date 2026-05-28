@@ -5,62 +5,70 @@ import uuid
 
 from src.players.base_player import BasePlayer
 from src.players.prompts import build_base_prompts, build_user_prompt, summarize_hand
-from src.players.prompts import _outcome, _won_amount, _fmt_action
+from src.players.prompts import _outcome, _won_amount, _net_amount, _fmt_action
 from src.players.rag import build_retrieval_query, topk_by_similarity, embed
 from src.players.llms import call_llm, parse_response
 from src.utils.file_storage import JSONLStore, EmbeddingStore, _alive_opponents_snapshot
 
 
 def render_fact_text(fact):
-    """ 把一条 fact dict 渲染为 embedding/LLM 可读的文本视图。 """
+    """ 把一条 hand-level fact 渲染为 embedding/LLM 可读的文本视图。
+    fact 的 board/hole/pot/to_call 取本手最后一个决策时的局面（最接近 final 的状态）。 """
     board = " ".join(fact["board"]) if fact["board"] else "(空)"
     hole = " ".join(fact["hole"]) if fact["hole"] else "(空)"
-    hist = " | ".join(
-        f"{h['phase']} {h['player_id']} {_fmt_action(h['action'])}"
-        for h in fact.get("history_so_far", [])
-    ) or "(无)"
-    intent = fact.get("my_intent") or "(无)"
-    action_str = _fmt_action(fact.get("my_action") or {})
+    decisions_lines = []
+    for d in fact.get("decisions", []):
+        intent = d.get("intent") or "(无)"
+        action_str = _fmt_action(d.get("action") or {})
+        decisions_lines.append(f"  [{d['phase']}] intent={intent} action={action_str}")
+    decisions_text = "\n".join(decisions_lines) or "  (无)"
     outcome = fact.get("hand_outcome")
+    net = fact.get("hand_net_amount", 0)
     won = fact.get("hand_won_amount", 0)
+    final_phase = fact.get("final_phase", "?")
     return (
-        f"[hand {fact['hand_index']}, decision #{fact['decision_idx']}, {fact['phase']}]\n"
-        f"board={board}, hole={hole}, pot={fact['pot_before']}, to_call={fact['to_call']}\n"
-        f"history: {hist}\n"
-        f"my_intent: {intent}\n"
-        f"my_action: {action_str}\n"
-        f"hand_outcome: {outcome} {won}"
+        f"[hand {fact['hand_index']}, 终局阶段={final_phase}]\n"
+        f"末态 board={board}, hole={hole}, pot={fact['pot_before']}, to_call={fact['to_call']}\n"
+        f"我的决策序列:\n{decisions_text}\n"
+        f"hand_outcome: {outcome} (净收益 {net:+d}, 从底池赢回 {won})"
     )
 
 
 def extract_facts_from_buffer(working_buffer, final_state, my_id):
-    """ 从 working_buffer 确定性抽取 fact 列表。 """
+    """ 从 working_buffer 抽取一条 hand-level fact。返回 list（0 或 1 条）以保持调用方接口稳定。 """
+    if not working_buffer:
+        return []
     hand_idx = final_state["hand_index"]
     outcome = _outcome(final_state, my_id)
     won = _won_amount(final_state, my_id)
-    facts = []
-    for i, turn in enumerate(working_buffer):
+    net = _net_amount(final_state, my_id)
+    last_turn = working_buffer[-1]
+    decisions = []
+    for turn in working_buffer:
         parsed = turn.get("parsed") or {}
-        fact = {
-            "id":               "f_" + uuid.uuid4().hex[:8],
-            "hand_index":       hand_idx,
-            "decision_idx":     i,
-            "phase":            turn["phase"],
-            "board":            turn["board"],
-            "hole":             turn["hole"],
-            "pot_before":       turn["pot_before"],
-            "to_call":          turn["to_call"],
-            "my_stack_before":  turn["my_stack_before"],
-            "opponents_state":  turn["opponents_state"],
-            "history_so_far":   turn["history_so_far"],
-            "my_intent":        parsed.get("intent"),
-            "my_action":        turn["action"],
-            "hand_outcome":     outcome,
-            "hand_won_amount":  won,
-        }
-        fact["text"] = render_fact_text(fact)
-        facts.append(fact)
-    return facts
+        decisions.append({
+            "phase":  turn["phase"],
+            "intent": parsed.get("intent"),
+            "action": turn["action"],
+        })
+    fact = {
+        "id":               "f_" + uuid.uuid4().hex[:8],
+        "hand_index":       hand_idx,
+        "final_phase":      last_turn["phase"],
+        "board":            last_turn["board"],
+        "hole":             last_turn["hole"],
+        "pot_before":       last_turn["pot_before"],
+        "to_call":          last_turn["to_call"],
+        "my_stack_before":  working_buffer[0]["my_stack_before"],
+        "opponents_state":  last_turn["opponents_state"],
+        "history_so_far":   last_turn["history_so_far"],
+        "decisions":        decisions,
+        "hand_outcome":     outcome,
+        "hand_won_amount":  won,
+        "hand_net_amount":  net,
+    }
+    fact["text"] = render_fact_text(fact)
+    return [fact]
 
 
 class FactAgent(BasePlayer):
@@ -163,8 +171,9 @@ class FactAgent(BasePlayer):
         if not facts:
             return "## 暂无事实"
         else:
-            parts = [f"## 共 {len(facts)} 条事实（流水型, 按时间）\n"]
+            parts = [f"## 共 {len(facts)} 条事实（hand-level, 按时间）\n"]
             for f in facts[-30:]:
-                parts.append(f"- (h{f['hand_index']}#{f['decision_idx']}, {f['phase']}, "
-                             f"intent={f.get('my_intent')!r}, outcome={f['hand_outcome']})")
+                last_intent = (f.get("decisions") or [{}])[-1].get("intent")
+                parts.append(f"- (h{f['hand_index']}, 终局={f.get('final_phase')}, "
+                             f"last_intent={last_intent!r}, outcome={f['hand_outcome']})")
             return "\n".join(parts)

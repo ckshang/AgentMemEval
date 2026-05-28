@@ -161,15 +161,25 @@ def compute_bluff_rate_series_proxy(output_dir, window=10):
 
     pids = sorted(actions["player_id"].unique())
 
+    # 短码 all-in 不构成 effective_raise，不算 postflop 主动 raise。
+    # 老数据没有该列时退化为"任何 raise 都算"。
+    if "effective_raise" in actions.columns:
+        eff_mask = pd.to_numeric(actions["effective_raise"], errors="coerce").fillna(0) > 0
+    else:
+        eff_mask = actions["action_type"] == "raise"
+
     per = []  # (hand_index, pid, qualifies, is_bluff)
     for _, h in hands.iterrows():
         h_idx = int(h["hand_index"])
         went_sd = bool(h["went_to_showdown"])
         ranks = _parse_showdown_ranks(h["showdown_ranks"])
         for pid in pids:
-            sub = actions[(actions["hand_index"] == h_idx) & (actions["player_id"] == pid)]
+            row_mask = (actions["hand_index"] == h_idx) & (actions["player_id"] == pid)
+            sub = actions[row_mask]
             postflop_raise = bool(
-                ((sub["action_type"] == "raise") & (sub["phase"].isin(_POSTFLOP_PHASES))).any()
+                ((sub["action_type"] == "raise")
+                 & (sub["phase"].isin(_POSTFLOP_PHASES))
+                 & eff_mask[row_mask]).any()
             )
             qualifies = went_sd and postflop_raise and (pid in ranks)
             if not qualifies:
@@ -192,14 +202,29 @@ def _intent_has_bluff(intent, keywords):
 
 def compute_bluff_rate_series_intent(output_dir, window=10, bluff_keywords=None):
     """ Intent 诈唬率（基于 LLM 内心活动）：
-          分母 = 该手 pid 至少做过一次翻后 raise（不管是否摊牌、是否赢）
+          分母 = 该手 pid 至少做过一次"有效"翻后 raise（短码 all-in 不算）
           分子 = 上述并且这些翻后 raise 的 intent 里出现诈唬关键词
-        每个 agent 的 actions.jsonl 含 intent 字段；naive 没有 memory 但也有 intent。 """
+        每个 agent 的 actions.jsonl 含 intent 字段；naive 没有 memory 但也有 intent。
+        通过 controller 写的 actions.csv 的 effective_raise 列过滤短码 all-in。 """
     if bluff_keywords is None:
         bluff_keywords = _BLUFF_KEYWORDS
 
     out = Path(output_dir)
     per = []  # (hand_index, pid, qualifies, is_bluff)
+
+    # 从 actions.csv 取每 (hand_index, pid) 是否有"有效"翻后 raise。
+    # 老数据缺列时退化为"任何 raise 都算"。
+    eff_lookup = set()
+    actions_csv = out / "actions.csv"
+    if actions_csv.exists():
+        ctrl_actions = pd.read_csv(actions_csv)
+        if "effective_raise" in ctrl_actions.columns:
+            eff_mask = pd.to_numeric(ctrl_actions["effective_raise"], errors="coerce").fillna(0) > 0
+        else:
+            eff_mask = ctrl_actions["action_type"] == "raise"
+        postflop = (ctrl_actions["action_type"] == "raise") & ctrl_actions["phase"].isin(_POSTFLOP_PHASES) & eff_mask
+        for _, row in ctrl_actions[postflop].iterrows():
+            eff_lookup.add((int(row["hand_index"]), row["player_id"]))
 
     for player_dir in out.iterdir():
         if not player_dir.is_dir() or not player_dir.name.startswith("player_"):
@@ -223,7 +248,8 @@ def compute_bluff_rate_series_intent(output_dir, window=10, bluff_keywords=None)
                 if (r.get("action") or {}).get("type") == "raise"
                    and r.get("phase") in _POSTFLOP_PHASES
             ]
-            qualifies = len(postflop_raises) > 0
+            # 必须该手该 pid 至少有一次"有效" postflop raise 才计入
+            qualifies = len(postflop_raises) > 0 and (h_idx, pid) in eff_lookup
             if not qualifies:
                 per.append((h_idx, pid, False, False))
                 continue

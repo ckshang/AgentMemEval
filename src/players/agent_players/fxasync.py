@@ -50,7 +50,7 @@ SWEEP_GENERALIZE_INSTRUCTION = """
 
 class FactExprAsyncAgent(ExprAgent):
     def __init__(self, player_id, model_name, starting_stack, output_dir, traj_window=30,
-                 salience_threshold=0.05, salience_mirror_threshold=0.3, stability_min=0.5, stability_max=50.0, stability_init=10.0,
+                 salience_threshold=0.03, salience_mirror_threshold=0.3, stability_min=0.5, stability_max=50.0, stability_init=10.0,
                  top_k_main=14, top_k_mirror=5, mirror_prob=0.3, sweep_every=5):
         super().__init__(player_id, model_name, starting_stack, output_dir, traj_window)
         self.salience_threshold = salience_threshold
@@ -118,7 +118,8 @@ class FactExprAsyncAgent(ExprAgent):
         top_main_ids = {f["id"] for f in top_main}
 
         # 镜像召回：从"已落到 [salience_threshold, salience_mirror_threshold) 区间"的边缘事实里以 mirror_prob 抽一条，注入偶发跨域记忆
-        if random.random() < self.mirror_prob:
+        # 冻结时（评估期）不做随机 mirror，保证泛化桌可复现
+        if not self.frozen and random.random() < self.mirror_prob:
             pool = [
                 f for f in all_facts
                 if f["id"] not in top_main_ids
@@ -151,15 +152,29 @@ class FactExprAsyncAgent(ExprAgent):
         all_facts = self.facts_store.read_all()
         active = [f for f in all_facts if self._salience(f["id"], t) >= self.salience_threshold]
 
-        # 最近 trajectory（既给 Path-1 当 query，也作为 prompt 的"近况"）
+        # 最近 trajectory（作为 prompt 的"近况"）
         rows = self.trajectory_log.read_all()
         recent = rows[-self.sweep_every:]
-        query_text = "\n\n".join(r["recap"] for r in recent) if recent else ""
+
+        # Path-1 的 query：用本手最后一次 decision snapshot 拼，与 decide 路径同口径。
+        # final_state 此时已 hand_over、pot 归零，分布和 decide 时差异较大，会让相似召回偏弱。
+        if self.working_buffer:
+            last = self.working_buffer[-1]
+            query_text = (
+                f"phase={last['phase']} "
+                f"hole={last['hole']} "
+                f"board={last['board']} "
+                f"pot={last['pot_before']} "
+                f"to_call={last['to_call']}"
+            )
+        else:
+            # 兜底：本手没有任何 decision（理论极罕见），退回 final_state
+            query_text = build_retrieval_query(final_state, me_id=self.player_id)
 
         # ========== Step 1: 三路召回 ==========
-        # Path 1 — 相似召回（以最近 trajectory 为 query）
+        # Path 1 — 相似召回（以本手局面为 query，结构化短串）
         # 把和最近相关的一些事实召回，总结经验
-        if active and query_text:
+        if active:
             p1, _ = topk_by_similarity(query_text, active, k=20, vec_lookup=self._emb_store.data, salience_fn=None)
         else:
             p1 = []
@@ -167,7 +182,7 @@ class FactExprAsyncAgent(ExprAgent):
         # 保持多样性
         buckets = defaultdict(list)
         for f in active:
-            buckets[(f["phase"], f["hand_outcome"])].append(f)
+            buckets[(f.get("final_phase"), f["hand_outcome"])].append(f)
         p2 = []
         for items in buckets.values():
             p2.extend(random.sample(items, k=min(2, len(items))))
@@ -180,13 +195,6 @@ class FactExprAsyncAgent(ExprAgent):
         for f in p1 + p2 + p3:
             merged.setdefault(f["id"], f)
         recalled = random.sample(list(merged.values()), k=min(30, len(merged)))
-
-        # 更新 access：只统计实际进入 prompt 的事实（= recalled）
-        for f in recalled:
-            st = self._state_table.get(f["id"])
-            if st is not None:
-                st["last_accessed_hand"] = t
-                st["access_count"] += 1
 
         # ========== Step 2: Generalize (LLM) ==========
         # 给 LLM 只看 recalled，但按"首次来源 path"归组，保留路径归属信息
@@ -207,7 +215,7 @@ class FactExprAsyncAgent(ExprAgent):
                 return f"[{title}]\n（无）"
             lines = [f"[{title}]"]
             for f in group:
-                lines.append(f"- ({f['id']}, h{f['hand_index']}, {f['phase']}, {f['hand_outcome']}) {f['text']}")
+                lines.append(f"- ({f['id']}, h{f['hand_index']}, {f.get('final_phase')}, {f['hand_outcome']}) {f['text']}")
             return "\n".join(lines)
 
         recalled_text = "\n\n".join(fmt(g, title) for title, g in groups.items())
@@ -347,10 +355,12 @@ class FactExprAsyncAgent(ExprAgent):
         try:
             def _save_state_table():
                 self._state_path.parent.mkdir(parents=True, exist_ok=True)
-                with open(self._state_path, "w", encoding="utf-8") as f:
+                tmp = self._state_path.with_suffix(self._state_path.suffix + ".tmp")
+                with open(tmp, "w", encoding="utf-8") as f:
                     for fid, st in self._state_table.items():
                         rec = {"id": fid, **st}
                         f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                tmp.replace(self._state_path)
 
             # update fact memory
             new_facts = extract_facts_from_buffer(self.working_buffer, final_state, self.player_id)

@@ -54,12 +54,10 @@ class EmbeddingStore:
         return self.data.get(fact_id)
 
     def save(self):
-        # np.save(self.path, self.data, allow_pickle=True)
-        tmp = self.path.with_suffix(self.path.suffix + ".tmp")
+        # 用 .npy 结尾的临时路径，避免 np.save 自动追加后缀导致路径漂移
+        tmp = self.path.with_suffix(self.path.suffix + ".tmp.npy")
         np.save(tmp, self.data, allow_pickle=True)
-        # np.save 会自动加 .npy 后缀，要适配
-        actual = tmp if tmp.exists() else tmp.with_suffix(tmp.suffix + ".npy")
-        actual.replace(self.path)
+        tmp.replace(self.path)
 
     def _load(self):
         if not self.path.exists():

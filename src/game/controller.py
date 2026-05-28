@@ -83,12 +83,12 @@ class GameController:
             if not p.busted:
                 hand_order.append(p)
 
-        # if len(hand_order) < 2:
-        #     # 不够人继续，直接收
-        #     self.hand_finished = True
-        #     self.phase = PHASE_HAND_OVER
-        #     self.current_player_seat = None
-        #     return
+        if len(hand_order) < 2:
+            # 不够人继续，直接收
+            self.hand_finished = True
+            self.phase = PHASE_HAND_OVER
+            self.current_player_seat = None
+            return
 
         # --- 4) 发底牌（每人 2 张，按 hand_order 轮两圈）---
         for _ in range(2):
@@ -118,6 +118,8 @@ class GameController:
         self.current_bet_this_round = bb_amt
 
         self.current_player_seat = first_to_act.seat
+        if first_to_act.stack == 0 or first_to_act.folded or first_to_act.busted:
+            self._advance_round_pointer(first_to_act.seat)
 
     def apply_action(self, action):
         """
@@ -126,10 +128,17 @@ class GameController:
         其中 raise 的 amount 是"加注到的总额"，不是差额。
         """
         seat = self.current_player_seat
+        if seat is None:
+            raise RuntimeError("当前没有行动者，无法 apply_action")
         p = self.players_by_seat[seat]
+
+        # --- 0) 硬校验：必须落在 _legal_actions 内（controller 是真相源）---
+        legal = self._legal_actions(p)
+        action = self._validate_action(action, legal)
         atype = action["type"]
 
         # --- 1) 执行动作（更新筹码 / 底池 / 本街最高下注线）---
+        is_effective_raise = None
         if atype == "fold":
             p.folded = True
 
@@ -145,6 +154,8 @@ class GameController:
             self.pot += amt
 
         elif atype == "raise":
+            prev_line = self.current_bet_this_round
+            prev_last_raise = self.last_raise_size_this_round
             new_total = action["amount"]
             diff = new_total - p.current_bet
             diff = min(diff, p.stack)              # 超过自己 stack 则 all-in
@@ -152,24 +163,59 @@ class GameController:
             p.current_bet += diff
             p.total_committed += diff
             self.pot += diff
-            if p.current_bet > self.current_bet_this_round:
-                raise_increment = p.current_bet - self.current_bet_this_round
+            is_effective_raise = False
+            if p.current_bet > prev_line:
+                raise_increment = p.current_bet - prev_line
                 self.current_bet_this_round = p.current_bet
-                if raise_increment >= self.last_raise_size_this_round:
+                if raise_increment >= prev_last_raise:
                     self.last_raise_size_this_round = raise_increment
                     self.has_acted_this_round = set()
+                    is_effective_raise = True
 
         else:
             raise ValueError(f"未知动作类型: {atype}")
 
         self.has_acted_this_round.add(seat)
-        self.action_history.append({
+        entry = {
             "phase": self.phase,
             "player_id": p.player_id,
             "action": action,
-        })
+        }
+        if atype == "raise":
+            # 短码 all-in 低于最小加注时 effective_raise=False，便于日志/诈唬率剔除
+            entry["effective_raise"] = is_effective_raise
+        self.action_history.append(entry)
 
-        # --- 2) 只剩一人没弃牌 → 不用 showdown，直接收底池 ---
+        self._advance_round_pointer(seat)
+
+    def _validate_action(self, action, legal):
+        """ 严格校验上层传来的 action 是否在 _legal_actions 内；不合法直接抛。 """
+        if not isinstance(action, dict) or "type" not in action:
+            raise ValueError(f"非法动作（结构错误）：{action!r}")
+        if not legal:
+            raise RuntimeError(f"当前玩家无合法动作，但收到 {action!r}")
+        atype = action["type"]
+        legal_by_type = {a["type"]: a for a in legal}
+        if atype not in legal_by_type:
+            raise ValueError(f"动作 {atype} 不在合法列表 {sorted(legal_by_type)}")
+        if atype == "raise":
+            rule = legal_by_type[atype]
+            amt = action.get("amount")
+            if not isinstance(amt, int):
+                raise ValueError(f"raise 缺少整数 amount：{action!r}")
+            if amt < rule["min_amount"] or amt > rule["max_amount"]:
+                raise ValueError(
+                    f"raise amount={amt} 越界 [{rule['min_amount']}, {rule['max_amount']}]"
+                )
+            return {"type": "raise", "amount": amt}
+        return {"type": atype}
+
+    def _advance_round_pointer(self, prev_seat):
+        """ 一个玩家行动完（或贴盲完）后，决定下一步：
+        ① 只剩一人没弃牌 → 直接收底池；
+        ② 本街已闭合 / 没人还能行动 → 推进到下一街或摊牌；
+        ③ 否则把行动权交给 prev_seat 之后第一位还能行动的玩家。 """
+        # ① 只剩一人没弃牌
         not_folded = [pp for pp in self.players if not pp.folded]
         if len(not_folded) == 1:
             winner = not_folded[0]
@@ -185,9 +231,7 @@ class GameController:
             self.current_player_seat = None
             return
 
-        # --- 3) 本街下注是否结束？
-        # 还能继续行动的人（没弃牌、还有筹码）必须：(a) current_bet 都等于本街最高线
-        #                                    (b) 都在 has_acted_this_round 里
+        # ② 本街闭合：所有还能行动的人 current_bet 已对齐且都行动过
         can_act = [pp for pp in self.players if not pp.folded and pp.stack > 0]
         round_done = (
             all(pp.current_bet == self.current_bet_this_round for pp in can_act)
@@ -197,16 +241,16 @@ class GameController:
             self._advance_street()
             return
 
-        # --- 4) 否则把行动权交给下一位（顺时针、跳过弃牌/all-in/busted）---
+        # ③ 找下一位能行动者（顺时针、跳过弃牌/all-in/busted）
         n = len(self._seat_order)
-        idx = self._seat_order.index(seat)
+        idx = self._seat_order.index(prev_seat)
         for i in range(1, n + 1):
             s = self._seat_order[(idx + i) % n]
             pp = self.players_by_seat[s]
             if not pp.folded and not pp.busted and pp.stack > 0:
                 self.current_player_seat = s
                 return
-        # 走到这说明没人能行动了（理论上前面 round_done 已经接住，保险起见）
+        # 理论 ② 已接住，兜底
         self.current_player_seat = None
         self._advance_street()
 
@@ -366,15 +410,25 @@ class GameController:
         else:
             actions.append({"type": "call"})
 
-        # raise 需要 call 完之后还能继续加
-        if p.stack > to_call:
+        # raise 需要 call 完之后还能继续加；
+        # 但若本玩家本街已行动过、现在只是面对一次"短码 all-in（reopens=False）"的补差额，
+        # 行动集合并未重开，不应再给 raise（只能 fold/call）。
+        already_acted_facing_short_allin = (
+            to_call > 0 and p.seat in self.has_acted_this_round
+        )
+        if p.stack > to_call and not already_acted_facing_short_allin:
             # 最小再加注 = 当前线 + 上一次有效加注额（每条街起始为大盲）
             min_to = self.current_bet_this_round + self.last_raise_size_this_round
             max_to = p.current_bet + p.stack                        # all-in 上限
             if max_to >= min_to:
                 actions.append({"type": "raise", "min_amount": min_to, "max_amount": max_to})
             else:
-                # 短码 all-in，金额低于正常 min_to，但仍允许作为 raise 出牌
-                actions.append({"type": "raise", "min_amount": max_to, "max_amount": max_to})
+                # 短码 all-in：金额低于正常 min_to，仍允许出牌，但不会重开行动集合
+                actions.append({
+                    "type": "raise",
+                    "min_amount": max_to,
+                    "max_amount": max_to,
+                    "reopens": False,
+                })
 
         return actions

@@ -19,9 +19,11 @@ def embed(texts):
   return np.asarray(_get_embedder().encode(texts, normalize_embeddings=True), dtype=np.float32)
 
 
-def build_retrieval_query(llm_state):
-    """ 生成 decide 时的 retrieval query。仅状态特征，不含策略词。 """
-    me_id = llm_state["current_player_id"]
+def build_retrieval_query(llm_state, me_id=None):
+    """ 生成 retrieval query。仅状态特征，不含策略词。
+    me_id=None 时取 current_player_id（decide 路径）；显式传入时用于 sweep 等没有当前行动者的场景。 """
+    if me_id is None:
+        me_id = llm_state["current_player_id"]
     me = next(p for p in llm_state["players"] if p["id"] == me_id)
     return (
         f"phase={llm_state['phase']} "
@@ -60,7 +62,7 @@ def topk_by_similarity(query_text, candidates, k, vec_lookup=None, salience_fn=N
 
     if salience_fn is not None:
         weights = np.array([float(salience_fn(c["id"]) or 0.0) for c in kept], dtype=np.float32)
-        sims = sims * weights
+        sims = sims + np.log(np.maximum(weights, 1e-6))  # similarity + log(salience)
 
     if k >= len(kept):
         order = np.argsort(-sims)

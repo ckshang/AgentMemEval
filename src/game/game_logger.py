@@ -10,7 +10,7 @@ from pathlib import Path
 _ACTION_HEADER = [
     "hand_index", "phase", "player_id",
     "action_type", "action_amount",
-    "pot_before",
+    "pot_before", "effective_raise",
 ]
 _HAND_HEADER = [
     "hand_index", "phase_final", "pot_final",
@@ -36,6 +36,7 @@ def write_hand_rows(out_dir, controller, final_state):
             w.writerow(_ACTION_HEADER)
         for ev in final_state["action_history"]:
             act = ev["action"]
+            eff = ev.get("effective_raise")
             w.writerow([
                 final_state["hand_index"],
                 ev["phase"],
@@ -43,6 +44,7 @@ def write_hand_rows(out_dir, controller, final_state):
                 act["type"],
                 act.get("amount", ""),
                 "",   # pot_before 暂不计算（要的话需 controller 同步记录）
+                "" if eff is None else int(bool(eff)),  # 仅 raise 有值；短码 all-in 为 0
             ])
 
     # --- hands.csv：这手一行 ---
