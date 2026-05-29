@@ -93,7 +93,7 @@ def plot_generalization_by_algo(generalization_results, save_path=None, ax=None)
     for algo, sub in agg.groupby("algo"):
         sub = sub.sort_values("sub_hand")
         ax.plot(sub["sub_hand"], sub["stack"], marker="o", markersize=4, label=algo)
-    ax.set_xlabel("Hand Index (在新桌上)")
+    ax.set_xlabel("Hand Index")
     ax.set_ylabel("Avg Stack per Algo (across snapshots)")
     ax.legend(loc="best", fontsize=9)
     ax.grid(True, alpha=0.3)

@@ -1,5 +1,6 @@
 import numpy as np
 
+from modelscope import snapshot_download
 from sentence_transformers import SentenceTransformer
 
 
@@ -9,7 +10,8 @@ _embedder = None
 def _get_embedder():
     global _embedder
     if _embedder is None:
-        _embedder = SentenceTransformer("BAAI/bge-small-zh-v1.5")
+        model_dir = snapshot_download("BAAI/bge-small-zh-v1.5")
+        _embedder = SentenceTransformer(model_dir)
     return _embedder
 
 
