@@ -5,12 +5,21 @@ from pathlib import Path
 
 
 def _alive_opponents_snapshot(state, my_id):
+    """ 落进 fact 的对手快照。用相对位置匿名标签 下家1/下家2... 替换真实 id，
+    保证未来从 fact 召回的内容里不会出现具体玩家身份。 """
+    players = state["players"]
+    n = len(players)
+    me_idx = next(i for i, p in enumerate(players) if p["id"] == my_id)
+    label = {}
+    for k in range(1, n):
+        label[players[(me_idx + k) % n]["id"]] = f"下家{k}"
+
     out = []
-    for p in state["players"]:
+    for p in players:
         if p["id"] == my_id or p["folded"] or p["busted"]:
             continue
         out.append({
-            "id": p["id"],
+            "label": label.get(p["id"], "?"),
             "stack": p["stack"],
             "current_bet": p["current_bet"],
             "total_committed": p["total_committed"],
