@@ -20,13 +20,48 @@ _PROVIDERS = {
         "base_url": "https://api.deepseek.com",
         "model_id": "deepseek-reasoner",
     },
+    "qwen3.6f": {
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model_id": "qwen3.6-flash",
+    },
+    "qwen3.6p": {
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model_id": "qwen3.6-plus",
+    },
+    "qwen3.7m": {
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model_id": "qwen3.7-max",
+    },
+    "kimik2.5": {
+        "api_key_env": "MOONSHOT_API_KEY",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model_id": "kimi-k2.5",
+    },
+    "kimik2.6": {
+        "api_key_env": "MOONSHOT_API_KEY",
+        "base_url": "https://api.moonshot.cn/v1",
+        "model_id": "kimi-k2.6",
+    },
+    "minimaxm2.5": {
+        "api_key_env": "MINIMAX_API_KEY",
+        "base_url": "https://api.minimax.chat/v1",
+        "model_id": "MiniMax-M2.5",
+    },
+    "minimaxm2.7": {
+        "api_key_env": "MINIMAX_API_KEY",
+        "base_url": "https://api.minimax.chat/v1",
+        "model_id": "MiniMax-M2.7",
+    },
 }
 
 
 _clients = {}
 
 
-def call_llm(model_name, messages, temperature=1.0, max_tokens=2048, json_mode=False):
+def call_llm(model_name, messages, temperature=1.0, max_tokens=4096, json_mode=False):
     if model_name not in _PROVIDERS:
         raise ValueError(f"{model_name} is not supported yet")
 
