@@ -10,6 +10,8 @@ from .agent_players.expr import ExprAgent
 from .agent_players.fxsync import FactExprSyncAgent
 from .agent_players.fxasync import FactExprAsyncAgent
 from .agent_players.naive import NaiveLLMPlayer
+from .agent_players.mbti import MBTIAgent
+from .personas import MBTI_TYPES
 
 
 _ALGO_CLS = {
@@ -63,7 +65,7 @@ def algo_of_player(player):
         return None
     tail = parts[2]
     algo = tail.split("-")[0]
-    if algo in _ALGO_CLS:
+    if algo in _ALGO_CLS or algo in MBTI_TYPES:
         return algo
     return None
 
@@ -75,19 +77,27 @@ def build_agent_from_snapshot(algo, snapshot_dir, player_id, starting_stack, mod
     1) 在 new_output_dir 下复制一份 snapshot 内容（保持文件独立，不污染原快照）
     2) 用对应 cls 初始化，构造函数会自动 load 这些文件
     """
-    cls = _ALGO_CLS[algo]
     new_dir = Path(new_output_dir)
     new_dir.mkdir(parents=True, exist_ok=True)
     for fname in _REVIVE_FILES:
         s = Path(snapshot_dir) / fname
         if s.exists():
             shutil.copy2(s, new_dir / fname)
-    agent = cls(
-        player_id=player_id,
-        model_name=model_name,
-        starting_stack=starting_stack,
-        output_dir=str(new_dir),
-    )
+    if algo in MBTI_TYPES:
+        agent = MBTIAgent(
+            player_id=player_id,
+            model_name=model_name,
+            starting_stack=starting_stack,
+            output_dir=str(new_dir),
+            persona=algo,
+        )
+    else:
+        agent = _ALGO_CLS[algo](
+            player_id=player_id,
+            model_name=model_name,
+            starting_stack=starting_stack,
+            output_dir=str(new_dir),
+        )
     agent.frozen = True
     return agent
 

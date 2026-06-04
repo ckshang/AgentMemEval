@@ -5,6 +5,8 @@ from .agent_players.expr import ExprAgent
 from .agent_players.fxsync import FactExprSyncAgent
 from .agent_players.fxasync import FactExprAsyncAgent
 from .agent_players.naive import NaiveLLMPlayer
+from .agent_players.mbti import MBTIAgent
+from .personas import MBTI_TYPES
 
 
 _AGENT_ALGO = {
@@ -32,15 +34,23 @@ def build_players(player_names, starting_stack, output_dir):
         player_dir = os.path.join(output_dir, player_id)
 
         algo_name, model_name = name.split("-")
-        if algo_name not in _AGENT_ALGO.keys():
+        if algo_name in MBTI_TYPES:
+            player = MBTIAgent(
+                player_id=player_id,
+                model_name=model_name,
+                starting_stack=starting_stack,
+                output_dir=player_dir,
+                persona=algo_name,
+            )
+        elif algo_name in _AGENT_ALGO:
+            player = _AGENT_ALGO[algo_name](
+                player_id=player_id,
+                model_name=model_name,
+                starting_stack=starting_stack,
+                output_dir=player_dir,
+            )
+        else:
             raise ValueError(f"{algo_name} is not supported yet")
-
-        player = _AGENT_ALGO[algo_name](
-            player_id=player_id,
-            model_name=model_name,
-            starting_stack=starting_stack,
-            output_dir=player_dir,
-        )
         players.append(player)
 
     return players
