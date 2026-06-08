@@ -37,4 +37,4 @@ Agent 必须在有限观察中学习如何记录、更新和调用记忆，并�
 1. 在 factual memory *vs.* experiential memory 中，我们观察到明显的 **adaptation-generalization trade-off**。经验型记忆能够在训练牌桌中快速积累经验并形成有效打法，从而压制其他类型的记忆；然而，这种打法似乎是过拟合的，迁移到其他牌桌上并不适用。相比之下，事实型记忆虽然在训练牌桌中被压制，但在其他牌桌上的泛化能力更强。这和深度学习的经典问题非常相似：模型通常需要在下游任务的任务内性能与任务外泛化之间取得平衡，即 adaptation *vs.* generalization。
 2. 另一个有趣的发现是，agent 的性格设定会显著影响其 memory 的形成过程，并进一步塑造其行为模式。不同性格的 agent 在记忆的筛选和更新方式上呈现出明显差异。例如，INTJ 倾向于反复自审并复修订 memory；ENFP 积累的经验最少，行为也更加冒险；等等。
 
-（To be continued...）
+**（To be continued...）**
