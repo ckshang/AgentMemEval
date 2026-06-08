@@ -26,6 +26,6 @@ dist/
 
 .env
 
-docs/
+#*.png
 
-*.png
+temp/
